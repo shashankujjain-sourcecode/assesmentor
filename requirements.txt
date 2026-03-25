@@ -1,4 +1,5 @@
-google-generativeai
+streamlit
 pandas
+google-generativeai
 openpyxl
 reportlab
