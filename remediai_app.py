@@ -12,7 +12,6 @@ from io import BytesIO
 # --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="RemediAI Professional", layout="wide")
 
-# CSS for high-fidelity "ASSET-style" visualization
 st.markdown(
     """
     <style>
@@ -40,17 +39,25 @@ else:
     st.error("❌ OpenAI API Key Missing in Streamlit Secrets.")
     st.stop()
 
-# --- 2. DATA LOADING & HTML CLEANING ---
+# --- 2. DATA LOADING (SMART SEARCH) ---
 @st.cache_data
 def load_db():
-    # Searching for your specific filename
-    file_name = "Teachshank_Master_Database_FINAL (1).tsv"
-    if os.path.exists(file_name):
-        df = pd.read_csv(file_name, sep='\t')
-        # Remove <br> tags from the NCERT Learning Outcomes [cite: 27, 35, 126]
-        df['Learning Outcomes'] = df['Learning Outcomes'].str.replace(r'<[^>]*>', ' ', regex=True)
-        return df
-    return pd.DataFrame()
+    # 1. Look for the exact filename
+    target = "Teachshank_Master_Database_FINAL (1).tsv"
+    if os.path.exists(target):
+        df = pd.read_csv(target, sep='\t')
+    else:
+        # 2. If not found, look for ANY file with 'Master' and '.tsv' or '.csv'
+        files = [f for f in os.listdir(".") if ("Master" in f and (f.endswith(".tsv") or f.endswith(".csv")))]
+        if files:
+            ext = ',' if files[0].endswith(".csv") else '\t'
+            df = pd.read_csv(files[0], sep=ext)
+        else:
+            return pd.DataFrame() # Return empty if nothing found
+
+    # Clean HTML tags like <br> from the outcomes [cite: 27, 55, 101]
+    df['Learning Outcomes'] = df['Learning Outcomes'].str.replace(r'<[^>]*>', ' ', regex=True)
+    return df
 
 db = load_db()
 
@@ -59,8 +66,6 @@ def generate_pdf(metadata, test_info):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
-    
-    # Student Header
     p.setFont("Helvetica-Bold", 18)
     p.drawString(50, h - 50, f"Assessment: {test_info['topic']}")
     p.setFont("Helvetica", 10)
@@ -68,7 +73,6 @@ def generate_pdf(metadata, test_info):
     p.drawString(50, h - 70, f"ID: {test_info['aid']}  |  Grade: {test_info['grade']}")
     p.line(50, h - 75, 545, h - 75)
     
-    # Questions
     y = h - 110
     p.setFillColor(colors.black)
     for q in metadata.get('questions', []):
@@ -81,7 +85,6 @@ def generate_pdf(metadata, test_info):
             y -= 15
         y -= 25
         if y < 100: p.showPage(); y = h - 50
-    
     p.save()
     buffer.seek(0)
     return buffer
@@ -92,26 +95,24 @@ st.title("🎯 RemediAI: Conceptual Assessment Engine")
 if not db.empty:
     with st.sidebar:
         st.header("📋 Setup")
-        u_grade = st.selectbox("Grade", sorted(db['Grade'].unique())) [cite: 26, 54]
-        sub_list = sorted(db[db['Grade'] == u_grade]['Subject'].unique()) [cite: 27, 44]
+        # Populate dropdowns from Master Database [cite: 1-17]
+        u_grade = st.selectbox("Grade", sorted(db['Grade'].unique()))
+        sub_list = sorted(db[db['Grade'] == u_grade]['Subject'].unique())
         u_subject = st.selectbox("Subject", sub_list)
         
         topic_df = db[(db['Grade'] == u_grade) & (db['Subject'] == u_subject)]
-        u_topic = st.selectbox("Topic", topic_df['Chapter Name'].unique()) [cite: 115, 142]
+        u_topic = st.selectbox("Topic", topic_df['Chapter Name'].unique())
         
         u_num_q = st.slider("Number of Questions", 1, 10, 5)
         u_aid = st.text_input("Assessment ID", value=f"{u_subject[:3].upper()}-101")
         
-        # Outcome retrieval [cite: 27, 47, 123]
         u_outcomes = db[(db['Grade'] == u_grade) & (db['Chapter Name'] == u_topic)]['Learning Outcomes'].values[0]
 
-    # Main Area
     st.markdown(f"<div class='outcome-box'><b>NCERT Learning Outcomes:</b><br>{u_outcomes}</div>", unsafe_allow_html=True)
     
     if st.button("✨ Generate Conceptual Assessment"):
         with st.spinner("AI is analyzing outcomes for deep misconceptions..."):
             try:
-                # Prompting OpenAI for strict diagnostic JSON
                 prompt = f"Create {u_num_q} high-fidelity conceptual questions for {u_grade} {u_subject} on {u_topic}. Focus on these outcomes: {u_outcomes}. Return JSON only."
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -124,11 +125,9 @@ if not db.empty:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-    # Visualization
     if 'assessment' in st.session_state:
         res = st.session_state['assessment']
         info = st.session_state['info']
-        
         pdf_file = generate_pdf(res, info)
         st.download_button("📥 Download PDF Paper", pdf_file, f"{info['aid']}.pdf", "application/pdf")
         
@@ -144,4 +143,8 @@ if not db.empty:
             </div>
             """, unsafe_allow_html=True)
 else:
-    st.error("❌ Master Database file missing. Please ensure 'Teachshank_Master_Database_FINAL (1).tsv' is in your GitHub folder.")
+    # Diagnostic helper to see what files are actually there
+    st.error("❌ Master Database file missing.")
+    st.write("Files currently in your GitHub folder:")
+    st.write(os.listdir("."))
+    st.info("Ensure you have pushed the .tsv file and it isn't empty.")
