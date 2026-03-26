@@ -5,141 +5,110 @@ import json
 import os
 import re
 
-# --- 1. PAGE CONFIG & THEME ---
-st.set_page_config(page_title="RemediAI: Misconception Engine", layout="wide")
+# --- 1. PAGE SETUP ---
+st.set_page_config(page_title="RemediAI: Full Suite", layout="wide")
 
 st.markdown(
     """
     <style>
     .main { background-color: #f8fafc; }
-    .stButton>button { border-radius: 8px; background-color: #2563eb; color: white; font-weight: 600; height: 3em; }
-    .engine-container { 
-        background-color: #ffffff; padding: 30px; border-radius: 15px; 
-        border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); 
-    }
-    .misconception-card {
-        background-color: #fff7ed; border-left: 5px solid #f97316;
-        padding: 15px; margin-top: 10px; border-radius: 0 8px 8px 0;
-    }
-    .question-text { font-size: 1.2rem; font-weight: 700; color: #1e293b; }
+    .stButton>button { border-radius: 8px; background-color: #2563eb; color: white; font-weight: 600; width: 100%; }
+    .card { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
+    .misconception-box { background-color: #fff7ed; border-left: 5px solid #f97316; padding: 10px; margin-top: 10px; border-radius: 4px; }
     </style>
     """, 
     unsafe_allow_html=True 
 )
 
-# --- 2. API & DATA INITIALIZATION ---
+# OpenAI API Setup
 if "OPENAI_API_KEY" in st.secrets:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 else:
-    st.error("❌ OpenAI API Key Missing! Add 'OPENAI_API_KEY' to Streamlit Secrets.")
+    st.error("❌ OpenAI API Key Missing!")
     st.stop()
 
+# --- 2. DATA LOADING ---
 @st.cache_data
-def load_vetted_database():
-    """Scans for the Master Database and cleans HTML noise."""
+def load_vetted_db():
     db_file = next((f for f in os.listdir(".") if "Master" in f and (f.endswith(".tsv") or f.endswith(".csv"))), None)
-    
     if db_file:
         sep = ',' if db_file.endswith(".csv") else '\t'
         df = pd.read_csv(db_file, sep=sep)
-        # Regex to strip <br> and other HTML tags [cite: 27, 55, 111]
         df['Learning Outcomes'] = df['Learning Outcomes'].str.replace(r'<[^>]*>', ' ', regex=True)
         return df
     return pd.DataFrame()
 
-db = load_vetted_database()
+db = load_vetted_db()
 
-# --- 3. THE INTERFACE ---
-st.title("🎯 RemediAI: The Misconception Engine")
+# --- 3. THE APP INTERFACE ---
+st.title("🎯 RemediAI: Creator & Diagnostic Engine")
 
 if not db.empty:
-    # SIDEBAR: SETUP & FILTERS
+    # --- ZONE 1: THE ASSESSMENT GENERATOR (Sidebar) ---
     with st.sidebar:
-        st.header("🛠️ Engine Controls")
-        
-        # Cascading Selection based on your Master Data 
-        u_grade = st.selectbox("1. Grade", sorted(db['Grade'].unique()))
+        st.header("🏗️ Generator Settings")
+        u_grade = st.selectbox("Select Grade", sorted(db['Grade'].unique()))
         sub_list = sorted(db[db['Grade'] == u_grade]['Subject'].unique())
-        u_subject = st.selectbox("2. Subject", sub_list)
-        
+        u_subject = st.selectbox("Select Subject", sub_list)
         topic_df = db[(db['Grade'] == u_grade) & (db['Subject'] == u_subject)]
-        u_topic = st.selectbox("3. Topic/Chapter", topic_df['Chapter Name'].unique())
-        
-        u_num_q = st.slider("4. Number of Diagnostic Questions", 1, 10, 5)
-        
-        # Fetch the clean outcome
+        u_topic = st.selectbox("Select Topic", topic_df['Chapter Name'].unique())
         u_outcomes = topic_df[topic_df['Chapter Name'] == u_topic]['Learning Outcomes'].values[0]
         
-        generate_btn = st.button("🚀 Run Misconception Engine")
-
-    # MAIN AREA: ENGINE OUTPUT
-    if generate_btn:
-        with st.spinner("AI is reverse-engineering student logic..."):
-            try:
-                prompt = f"""
-                You are a senior pedagogical expert at Ei ASSET. 
-                Generate {u_num_q} conceptual MCQs for {u_grade} {u_subject} on {u_topic}.
-                Learning Outcomes: {u_outcomes}.
-
-                DIAGNOSTIC REQUIREMENT:
-                For every question, map each incorrect option to a specific student misconception 
-                prevalent in the Indian education context.
-
-                RETURN JSON ONLY:
-                {{
-                  "engine_output": [
-                    {{
-                      "q_id": 1,
-                      "question": "...",
-                      "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
-                      "correct_option": "A",
-                      "misconception_map": {{
-                        "B": "Specific Misconception Name",
-                        "C": "Specific Misconception Name",
-                        "D": "Specific Misconception Name"
-                      }}
-                    }}
-                  ]
-                }}
-                """
+        if st.button("Generate Assessment"):
+            with st.spinner("AI is crafting questions..."):
+                prompt = f"Create 3 conceptual MCQs for {u_grade} {u_subject} on {u_topic}. Outcomes: {u_outcomes}. Return JSON only."
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[{"role": "system", "content": "You are a diagnostic assessment engine. Output valid JSON."},
+                    messages=[{"role": "system", "content": "Output JSON: {'questions': [{'id':1, 'q':'', 'options':{'A':'','B':'','C':'','D':''}, 'correct':'A', 'map':{'B':'Err','C':'Err','D':'Err'}}] }"},
                               {"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}
                 )
-                st.session_state['engine_results'] = json.loads(response.choices[0].message.content)
-            except Exception as e:
-                st.error(f"Engine Error: {e}")
+                st.session_state['current_test'] = json.loads(response.choices[0].message.content)
+                st.session_state['topic'] = u_topic
 
-    # DISPLAY THE RESULTS IN A DEDICATED SPACE
-    if 'engine_results' in st.session_state:
-        st.subheader(f"Diagnostic Map: {u_topic}")
-        st.info(f"**Target Outcomes:** {u_outcomes}") [cite: 27, 113, 138]
+    # --- ZONE 2: ASSESSMENT DISPLAY & SUBMISSION ---
+    col_left, col_right = st.columns([1, 1])
 
-        for q in st.session_state['engine_results'].get('engine_output', []):
-            with st.container():
-                st.markdown(f"""
-                <div class="engine-container">
-                    <div class="question-text">Q{q['q_id']}. {q['question']}</div>
-                    <hr>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                        <div style="padding: 10px; border: 1px solid #e2e8f0;">A: {q['options']['A']}</div>
-                        <div style="padding: 10px; border: 1px solid #e2e8f0;">B: {q['options']['B']}</div>
-                        <div style="padding: 10px; border: 1px solid #e2e8f0;">C: {q['options']['C']}</div>
-                        <div style="padding: 10px; border: 1px solid #e2e8f0;">D: {q['options']['D']}</div>
-                    </div>
-                    <p style="margin-top:15px; color: #059669; font-weight: bold;">✔ Correct Answer: {q['correct_option']}</p>
-                    
-                    <div class="misconception-card">
-                        <strong>🧠 Misconception Mapping (The Engine):</strong><br>
-                        • Option {list(q['misconception_map'].keys())[0]}: {list(q['misconception_map'].values())[0]}<br>
-                        • Option {list(q['misconception_map'].keys())[1]}: {list(q['misconception_map'].values())[1]}<br>
-                        • Option {list(q['misconception_map'].keys())[2]}: {list(q['misconception_map'].values())[2]}
-                    </div>
-                </div>
-                <br>
-                """, unsafe_allow_html=True)
+    with col_left:
+        st.subheader("📝 Assessment Viewer")
+        if 'current_test' in st.session_state:
+            st.info(f"**Topic:** {st.session_state['topic']}")
+            
+            # Form to submit student answers
+            with st.form("student_submission"):
+                user_answers = {}
+                for q in st.session_state['current_test']['questions']:
+                    st.markdown(f"**Q{q['id']}. {q['q']}**")
+                    for lbl, txt in q['options'].items():
+                        st.write(f"{lbl}. {txt}")
+                    user_answers[q['id']] = st.radio(f"Select Answer for Q{q['id']}", ["A", "B", "C", "D"], key=f"rad_{q['id']}")
+                    st.markdown("---")
+                
+                submit_test = st.form_submit_button("Submit & Run Misconception Engine")
+
+    # --- ZONE 3: THE MISCONCEPTION ENGINE (Analysis) ---
+    with col_right:
+        st.subheader("🧠 Misconception Engine")
+        if 'current_test' in st.session_state and submit_test:
+            st.success("Analysis Complete!")
+            
+            for q in st.session_state['current_test']['questions']:
+                student_ans = user_answers[q['id']]
+                is_correct = student_ans == q['correct']
+                
+                with st.container():
+                    st.markdown(f"**Question {q['id']} Analysis**")
+                    if is_correct:
+                        st.markdown("✅ **Correct!** Student understands the concept.")
+                    else:
+                        error_type = q['map'].get(student_ans, "Unknown Conceptual Gap")
+                        st.markdown(f"❌ **Incorrect (Selected {student_ans})**")
+                        st.markdown(f"""<div class="misconception-box">
+                            <b>Detected Misconception:</b> {error_type}
+                        </div>""", unsafe_allow_html=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
+        else:
+            st.write("Submit the assessment to see the diagnostic analysis.")
+
 else:
-    st.error("❌ Database Not Found.")
-    st.write("Ensure your .tsv file is in your GitHub root folder.")
+    st.error("❌ Master Database not found.")
