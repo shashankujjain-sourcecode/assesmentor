@@ -3,7 +3,6 @@ import pandas as pd
 from openai import OpenAI
 import json
 import os
-import re
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -16,18 +15,17 @@ st.markdown("""
     <style>
     .main { background-color: #f8fafc; }
     .stButton>button { border-radius: 8px; background-color: #1e40af; color: white; font-weight: bold; width: 100%; height: 3.5em; }
-    .report-card { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    .remedial-box { background-color: #fff7ed; border-left: 5px solid #f97316; padding: 15px; border-radius: 8px; }
+    .remedial-box { background-color: #fff7ed; border-left: 5px solid #f97316; padding: 15px; border-radius: 8px; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 if "OPENAI_API_KEY" in st.secrets:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 else:
-    st.error("❌ OpenAI API Key Missing in Secrets!")
+    st.error("❌ OpenAI API Key Missing! Please add it to Streamlit Secrets.")
     st.stop()
 
-# --- 2. DATABASE & SESSION STATE ---
+# --- 2. DATABASE LOADING ---
 @st.cache_data
 def load_vetted_db():
     db_file = next((f for f in os.listdir(".") if "Master" in f and (f.endswith(".tsv") or f.endswith(".csv"))), None)
@@ -40,10 +38,11 @@ def load_vetted_db():
 
 db = load_vetted_db()
 
+# Persistent Storage
 if 'meta_store' not in st.session_state: st.session_state['meta_store'] = {}
 if 'history' not in st.session_state: st.session_state['history'] = []
 
-# --- 3. MULTICOLORED PDF ENGINE (FIXED) ---
+# --- 3. MULTICOLORED PDF ENGINE (CRASH-PROOF) ---
 def generate_branded_pdf(metadata, info, school_name):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=A4)
@@ -58,7 +57,7 @@ def generate_branded_pdf(metadata, info, school_name):
     p.setFont("Helvetica", 10)
     p.drawCentredString(w/2, h - 65, f"Assessment Topic: {info['topic']}")
 
-    # Info Bar (Light Grey) - FIXED KeyError by using stroke=1
+    # Info Bar (Light Grey)
     p.setLineWidth(0.5)
     p.setStrokeColor(colors.lightgrey)
     p.setFillColor(colors.HexColor("#f1f5f9"))
@@ -71,12 +70,17 @@ def generate_branded_pdf(metadata, info, school_name):
     # Questions
     y = h - 150
     for q in metadata.get('questions', []):
+        # FIX: Safe-checking multiple keys to avoid KeyError
+        q_text = q.get('q') or q.get('question') or "Text Missing"
+        q_id = q.get('id') or q.get('qno') or "?"
+        
         p.setFont("Helvetica-Bold", 11)
-        p.drawString(50, y, f"Q{q['id']}. {q['q']}")
+        p.drawString(50, y, f"Q{q_id}. {q_text}")
         y -= 20
         p.setFont("Helvetica", 10)
-        for lbl, txt in q.get('options', {}).items():
-            p.drawString(70, y, f"{lbl}. {txt}")
+        opts = q.get('options', {})
+        for lbl in ["A", "B", "C", "D"]:
+            p.drawString(70, y, f"{lbl}. {opts.get(lbl, '---')}")
             y -= 15
         y -= 25
         if y < 100: p.showPage(); y = h - 50
@@ -86,53 +90,43 @@ def generate_branded_pdf(metadata, info, school_name):
     return buffer
 
 # --- 4. THE WORKFLOW ---
-st.title("🎯 RemediAI: Next-Gen Diagnostic Suite")
-tab1, tab2 = st.tabs(["🏗️ Phase 1: Assessment Creator", "📊 Phase 2: Diagnostic Reporting"])
+st.title("🎯 RemediAI: Professional Diagnostic Suite")
+tab1, tab2 = st.tabs(["🏗️ Phase 1: Creator", "📊 Phase 2: Diagnostic Reporting"])
 
 with tab1:
     if not db.empty:
         with st.sidebar:
-            st.header("🏫 Branding & Configuration")
-            u_school = st.text_input("School Name", "Vikas International School")
+            st.header("🏫 Setup")
+            u_school = st.text_input("School Name", "Global International School")
             u_grade = st.selectbox("Grade", sorted(db['Grade'].unique()))
             u_subject = st.selectbox("Subject", sorted(db[db['Grade'] == u_grade]['Subject'].unique()))
             topic_df = db[(db['Grade'] == u_grade) & (db['Subject'] == u_subject)]
             u_topic = st.selectbox("Topic", topic_df['Chapter Name'].unique())
-            
-            u_num = st.number_input("No. of Questions", 1, 15, 5)
+            u_num = st.number_input("Questions", 1, 15, 5)
             u_time = st.number_input("Time (Mins)", 5, 180, 30)
-            u_diff = st.select_slider("Difficulty Level", options=list(range(1, 13)), value=6)
+            u_diff = st.slider("Difficulty", 1, 12, 6)
             u_aid = st.text_input("Assessment ID", value=f"DIAG-{u_subject[:3].upper()}-01")
-            
             u_outcomes = topic_df[topic_df['Chapter Name'] == u_topic]['Learning Outcomes'].values[0]
 
         if st.button("🚀 Generate Branded Paper & Template"):
             avoid = ", ".join(st.session_state['history'][-5:])
             with st.spinner("Engineering high-fidelity misconceptions..."):
-                prompt = f"""
-                Create {u_num} conceptual MCQs for {u_grade} {u_subject} on '{u_topic}'.
-                Difficulty: {u_diff}/12. Outcomes: {u_outcomes}. NO diagrams. 
-                NO repetition of: {avoid}. Text only.
-                Each wrong option must map to a specific conceptual misconception.
-                Return JSON only.
-                """
+                prompt = f"Create {u_num} conceptual MCQs for {u_grade} {u_subject} on '{u_topic}'. Difficulty: {u_diff}/12. Outcomes: {u_outcomes}. NO diagrams. NO repetition of: {avoid}. Return JSON."
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}
                 )
                 metadata = json.loads(response.choices[0].message.content)
-                info = {"topic": u_topic, "grade": u_grade, "subject": u_subject, "aid": u_aid, "time": u_time, "diff": u_diff}
+                info = {"topic": u_topic, "grade": u_grade, "subject": u_subject, "aid": u_aid, "time": u_time}
                 
                 st.session_state['meta_store'][u_aid] = {"metadata": metadata, "info": info}
                 st.session_state['history'].append(u_topic)
-                st.success(f"Assessment {u_aid} Ready!")
-
-                # 1. Download Multicolored PDF
-                pdf = generate_branded_pdf(metadata, info, u_school)
-                st.download_button("📥 Download Branded Paper (PDF)", pdf, f"{u_aid}_Paper.pdf", "application/pdf")
                 
-                # 2. Download Excel Template
+                # Downloadable Files
+                pdf = generate_branded_pdf(metadata, info, u_school)
+                st.download_button("📥 Download Branded Paper (PDF)", pdf, f"{u_aid}_Paper.pdf")
+                
                 tpl_df = pd.DataFrame(columns=["Student Name"] + [f"Q{i+1}" for i in range(u_num)])
                 out = BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
@@ -141,44 +135,47 @@ with tab1:
 
 with tab2:
     st.header("Upload Results & Get Detailed Reports")
-    input_aid = st.text_input("Enter Assessment ID (e.g. DIAG-MAT-01)")
+    input_aid = st.text_input("Enter Assessment ID (from Phase 1)")
     uploaded_file = st.file_uploader("Upload Student Excel", type=["xlsx"])
 
     if uploaded_file and input_aid:
         if input_aid not in st.session_state['meta_store']:
-            st.error("ID not found in current session.")
+            st.error("ID not found. Ensure you created it in Phase 1.")
         else:
             df_res = pd.read_excel(uploaded_file)
             store = st.session_state['meta_store'][input_aid]
             meta = store['metadata']
             
-            st.subheader("📊 Class-Wise Summary")
+            st.subheader("📊 Class Summary")
             all_errs = []
             for _, row in df_res.iterrows():
-                for q in meta['questions']:
-                    ans = str(row[f"Q{q['id']}"]).strip().upper()
-                    if ans != q['correct']:
-                        all_errs.append(q['mappings'].get(ans, "Logic Gap"))
+                for q in meta.get('questions', []):
+                    q_id = q.get('id') or q.get('qno')
+                    ans = str(row[f"Q{q_id}"]).strip().upper()
+                    if ans != q.get('correct'):
+                        maps = q.get('mappings') or q.get('engine') or {}
+                        all_errs.append(maps.get(ans, "Logic Gap"))
             
             if all_errs:
                 st.bar_chart(pd.Series(all_errs).value_counts())
             
             st.divider()
             
-            st.subheader("👤 Individual Report & Remedial Plan")
+            st.subheader("👤 Individual Diagnostic & Remedial Plan")
             student = st.selectbox("Select Student", df_res['Student Name'].unique())
-            s_data = df_res[df_res['Student Name'] == student].iloc[0]
+            s_row = df_res[df_res['Student Name'] == student].iloc[0]
             
-            for q in meta['questions']:
-                s_ans = str(s_data[f"Q{q['id']}"]).strip().upper()
+            for q in meta.get('questions', []):
+                q_id = q.get('id') or q.get('qno')
+                s_ans = str(s_row[f"Q{q_id}"]).strip().upper()
                 with st.container():
-                    if s_ans == q['correct']:
-                        st.markdown(f"**Q{q['id']}:** ✅ Correct")
+                    if s_ans == q.get('correct'):
+                        st.markdown(f"**Q{q_id}:** ✅ Correct")
                     else:
-                        err = q['mappings'].get(s_ans, 'Conceptual Error')
-                        st.markdown(f"**Q{q['id']}:** ❌ Incorrect (Selected {s_ans})")
+                        maps = q.get('mappings') or q.get('engine') or {}
+                        err = maps.get(s_ans, 'Conceptual Error')
+                        st.markdown(f"**Q{q_id}:** ❌ Incorrect (Selected {s_ans})")
                         st.markdown(f"""<div class="remedial-box">
-                            <b>Misconception:</b> {err}<br>
-                            <b>🛠️ Remedial Action:</b> Focus on foundational logic of {u_topic}.
+                            <b>Detected Misconception:</b> {err}<br>
+                            <b>🛠️ Remedial Action:</b> Re-teach the foundational logic of {u_topic}.
                         </div>""", unsafe_allow_html=True)
-                st.write("")
